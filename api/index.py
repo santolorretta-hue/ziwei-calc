@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from lunar_python import Solar
 
-app = FastAPI(title="钦天门紫微斗数API (像素级对齐版)")
+app = FastAPI(title="钦天门紫微斗数API (终极修正版)")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -15,7 +15,7 @@ class ZiWeiEngine:
     def __init__(self):
         self.ZHI = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
         self.GAN = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
-        # 纳音定局 (辛酉=木三局)
+        # 纳音定局 (命宫干支 -> 局数)
         self.NAYIN = {"甲子":4,"乙丑":4,"丙寅":6,"丁卯":6,"戊辰":5,"己巳":5,"庚午":5,"辛未":5,"壬申":4,"癸酉":4,
                       "甲戌":6,"乙亥":6,"丙子":2,"丁丑":2,"戊寅":5,"己卯":5,"庚辰":4,"辛巳":4,"壬午":5,"癸未":3,
                       "甲申":2,"乙酉":2,"丙戌":5,"丁亥":5,"戊子":6,"己丑":6,"庚寅":5,"辛卯":5,"壬辰":2,"癸巳":2,
@@ -32,38 +32,36 @@ class ZiWeiEngine:
             if (day + x) % bureau == 0:
                 q = (day + x) // bureau
                 base = (2 + q - 1) % 12
-                # 奇减偶加
                 return (base - x) % 12 if x % 2 != 0 else (base + x) % 12
         return 2
 
     def calculate(self, y_gan, m_idx, day, h_idx, gender):
-        # 1. 命宫定位 (寅2 + 月 - 时)
-        ming_idx = (2 + m_idx - h_idx) % 12
-        shen_idx = (2 + m_idx + h_idx) % 12
+        # 1. 命宫定位 (核心修复：直接相减，不再额外偏移)
+        # 逻辑：月支代表太阳过宫，时支代表地平旋转。直接差值即为命宫。
+        ming_idx = (m_idx - h_idx) % 12
+        shen_idx = (m_idx + h_idx) % 12
         
         # 2. 宫干 (五虎遁: 癸年起甲寅)
-        # 癸(9) -> (9%5)*2+2 = 10 -> 0(甲)
         start_gan_idx = ((self.GAN.index(y_gan) % 5) * 2 + 2) % 10
         stems = {self.ZHI[(2+i)%12]: self.GAN[(start_gan_idx+i)%10] for i in range(12)}
         
-        # 3. 定局
+        # 3. 定局 (辛酉 -> 木三局)
         ming_gz = stems[self.ZHI[ming_idx]] + self.ZHI[ming_idx]
         bureau = self.NAYIN.get(ming_gz, 3)
         
-        # 4. 安星 (生成14主星)
+        # 4. 安星
         zw_idx = self.get_ziwei_idx(bureau, day)
-        # 天府位置：(寅2+申8)轴线对称 -> (4 - zw_idx)
         tf_idx = (4 - zw_idx) % 12
         
         stars = {z: [] for z in self.ZHI}
         
-        # 紫微星系
+        # 紫微系 (逆行)
         for n, o in [("紫微",0),("天机",1),("太阳",3),("武曲",4),("天同",5),("廉贞",8)]:
             stars[self.ZHI[(zw_idx-o)%12]].append(n)
-        # 天府星系
+        # 天府系 (顺行)
         for n, o in [("天府",0),("太阴",1),("贪狼",2),("巨门",3),("天相",4),("天梁",5),("七杀",6),("破军",10)]:
             stars[self.ZHI[(tf_idx+o)%12]].append(n)
-            
+        
         # 5. 逆布十二宫
         p_names = ["命宫","兄弟","夫妻","子女","财帛","疾厄","迁移","交友","官禄","田宅","福德","父母"]
         is_yang = y_gan in "甲丙戊庚壬"
@@ -79,11 +77,11 @@ class ZiWeiEngine:
             zhi = self.ZHI[curr_idx]
             gan = stems[zhi]
             
-            # 星曜处理
+            # 组装星曜 + 四化
             star_list = stars[zhi]
             fmt_stars = []
             if not star_list:
-                fmt_stars.append("【空宫】") # 显式标注空宫
+                fmt_stars.append("【空宫】")
             else:
                 for s in star_list:
                     tag = next((f"({k})" for k, v in sihua_map.items() if v in s), "")
@@ -115,9 +113,9 @@ def calc(req: PaipanRequest):
         s = Solar.fromYmdHms(req.year, req.month, req.day, req.hour, req.minute, 0)
         l = s.getLunar()
         
-        # 核心：使用干支月 (清明后为辰月=3)
+        # 核心修复：直接获取干支月索引 (寅=2, 卯=3, 辰=4)
         m_gz = l.getMonthInGanZhi()
-        m_idx = engine.ZHI.index(m_gz[1]) - 1 
+        m_idx = engine.ZHI.index(m_gz[1]) 
         h_idx = engine.ZHI.index(l.getTimeZhi())
         
         data = engine.calculate(l.getYearGan(), m_idx, l.getDay(), h_idx, req.gender)
