@@ -86,3 +86,4 @@ def calc(req: PaipanRequest):
     
     data = engine.calculate(l.getYearGan(), m_idx, l.getDay(), engine.ZHI.index(l.getTimeZhi()), req.gender)
     return {"meta": {"公历": s.toYmdHms(), "干支": f"{l.getYearInGanZhi()} {m_pillar} {l.getDayInGanZhi()}"}, "result": data}
+
