@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from lunar_python import Solar
 
-app = FastAPI(title="紫微斗数API (顺逆大限修正版)")
+app = FastAPI(title="紫微斗数API (立春定年+农历定月版)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +34,7 @@ class ZiWeiEngine:
             "甲辰":6,"乙巳":6,"丙午":2,"丁未":2,"戊申":5,"己酉":5,"庚戌":4,"辛亥":4,"壬子":5,"癸丑":5,
             "甲寅":2,"乙卯":2,"丙辰":5,"丁巳":5,"戊午":6,"己未":6,"庚申":5,"辛酉":5,"壬戌":2,"癸亥":2
         }
+        # 丁干：阴同机巨（巨门化忌）
         self.SIHUA = {"甲":"廉破武阳","乙":"机梁紫阴","丙":"同机昌廉","丁":"阴同机巨","戊":"贪阴右机",
                       "己":"武贪梁曲","庚":"阳武阴同","辛":"巨阳曲昌","壬":"梁紫左武","癸":"破巨阴贪"}
 
@@ -48,7 +49,6 @@ class ZiWeiEngine:
     def get_aux_stars(self, month_idx, h_idx, y_zhi, y_gan):
         stars = {z: [] for z in self.ZHI}
         
-        # 辅星安星诀
         stars[self.ZHI[(10 - h_idx) % 12]].append("文昌")
         stars[self.ZHI[(4 + h_idx) % 12]].append("文曲")
         stars[self.ZHI[(4 + month_idx - 1) % 12]].append("左辅")
@@ -86,19 +86,15 @@ class ZiWeiEngine:
         return stars
 
     def calculate(self, y_gan, y_zhi, m_idx, day, h_idx, gender):
-        # 1. 命宫公式
         ming_idx = (2 + (m_idx - 1) - h_idx) % 12
         shen_idx = (2 + (m_idx - 1) + h_idx) % 12
         
-        # 2. 五虎遁
         start_gan_idx = ((self.GAN.index(y_gan) % 5) * 2 + 2) % 10
         stems = {self.ZHI[(2+i)%12]: self.GAN[(start_gan_idx+i)%10] for i in range(12)}
         
-        # 3. 定局
         ming_gz = stems[self.ZHI[ming_idx]] + self.ZHI[ming_idx]
         bureau = self.NAYIN.get(ming_gz, 3)
         
-        # 4. 安主星
         zw_idx = self.get_ziwei_idx(bureau, day)
         tf_idx = (4 - zw_idx) % 12
         
@@ -111,17 +107,10 @@ class ZiWeiEngine:
         aux_stars = self.get_aux_stars(m_idx, h_idx, y_zhi, y_gan)
         for z, slist in aux_stars.items(): stars[z].extend(slist)
         
-        # 5. 组装数据
-        # 注意：这个列表是逆时针的 (命->兄->夫...)
         p_names = ["命宫","兄弟","夫妻","子女","财帛","疾厄","迁移","交友","官禄","田宅","福德","父母"]
         
         is_yang_year = y_gan in "甲丙戊庚壬"
-        
-        # 判定顺逆：阳男阴女顺，阴男阳女逆
-        if (is_yang_year and gender == "男") or (not is_yang_year and gender == "女"):
-            direction = 1 # 顺行
-        else:
-            direction = -1 # 逆行
+        direction = 1 if (is_yang_year and gender == "男") or (not is_yang_year and gender == "女") else -1
         
         sihua_str = self.SIHUA.get(y_gan, "")
         sihua_map = {"禄":sihua_str[0],"权":sihua_str[1],"科":sihua_str[2],"忌":sihua_str[3]}
@@ -142,25 +131,11 @@ class ZiWeiEngine:
                         break
                 fmt_stars.append(f"{s}{tag}")
             
-            # --- 大限计算 (核心修复) ---
-            # 列表 p_names 是逆时针排列的 (0=命, 1=兄, 2=夫...)
-            
-            # 如果是逆行 (direction=-1): 
-            # 大限走法: 命->兄->夫... 
-            # 走到第 i 个格子，正好对应 p_names[i]，所以 step = i
-            
-            # 如果是顺行 (direction=1):
-            # 大限走法: 命->父->福...
-            # 走到第 i 个格子 (比如 i=2, 夫妻宫)，它是逆时针的第2个
-            # 但顺行的大限是顺时针走的，所以夫妻宫是大限的第 (12-2)=10 个限 (很老的时候)
-            # 反过来，第 i 个大限，应该对应 p_names 的第 (12-i) 个格子
-            
-            # 这里我们要计算的是：当前格子 (p_names[i]) 是第几个大限？
-            if direction == -1: # 逆行
+            # 大限计算
+            if direction == -1: 
                 limit_rank = i 
-            else: # 顺行
+            else: 
                 limit_rank = (12 - i) % 12
-            
             age_start = bureau + limit_rank * 10
             
             tag_list = []
@@ -190,24 +165,25 @@ def calc(req: PaipanRequest):
         s = Solar.fromYmdHms(req.year, req.month, req.day, req.hour, req.minute, 0)
         l = s.getLunar()
         
-        # --- 定月规则修正 ---
+        # --- 1. 定年：严格按八字（立春） ---
+        # 1977.2.24 -> 过了2.4立春 -> 丁巳年 (丁干)
+        bazi = l.getEightChar()
+        y_gz = bazi.getYear() 
+        y_gan = y_gz[0] # "丁"
+        y_zhi = y_gz[1] # "巳"
+        
+        # --- 2. 定月：严格按农历+闰月分段 ---
         raw_month = l.getMonth() 
         day = l.getDay()
         
-        # 仅闰月执行折半法 (Qi)
-        if raw_month < 0: 
+        if raw_month < 0: # 闰月
             m_idx = abs(raw_month)
             if day > 15: m_idx += 1
-        # 非闰月，哪怕是月底，也按本月算 (梅, 龚)
         else:
-            m_idx = raw_month
-            
+            m_idx = raw_month # 非闰月
         if m_idx > 12: m_idx = 1
         
         h_idx = engine.ZHI.index(l.getTimeZhi())
-        y_gz = l.getYearInGanZhi()
-        y_gan = y_gz[0]
-        y_zhi = y_gz[1]
         
         data = engine.calculate(y_gan, y_zhi, m_idx, day, h_idx, req.gender)
         
@@ -216,7 +192,7 @@ def calc(req: PaipanRequest):
                 "公历": s.toYmdHms(),
                 "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日",
                 "干支": f"{y_gz} {l.getMonthInGanZhi()} {l.getDayInGanZhi()}",
-                "计算月": m_idx
+                "逻辑": "年按立春，月按农历"
             },
             "chart": data,
             "result": data
@@ -227,7 +203,7 @@ def calc(req: PaipanRequest):
         return {
             "error": True, 
             "message": str(e),
-            "meta": {"干支": "维护中"},
+            "meta": {"干支": "系统维护中"},
             "result": {}
         }
 
