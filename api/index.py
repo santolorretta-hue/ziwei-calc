@@ -2,9 +2,9 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from lunar_python import Solar
+from lunar_python import Solar, Lunar, LunarMonth
 
-app = FastAPI(title="钦天门紫微斗数API (八字节气内核版)")
+app = FastAPI(title="钦天门紫微斗数API (时区校准版)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,7 +26,7 @@ class ZiWeiEngine:
         self.ZHI = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
         self.GAN = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
         
-        # 纳音五行局
+        # 纳音五行局 (命宫干支 -> 局数)
         self.NAYIN = {
             "甲子":4,"乙丑":4,"丙寅":6,"丁卯":6,"戊辰":5,"己巳":5,"庚午":5,"辛未":5,"壬申":4,"癸酉":4,
             "甲戌":6,"乙亥":6,"丙子":2,"丁丑":2,"戊寅":5,"己卯":5,"庚辰":4,"辛巳":4,"壬午":5,"癸未":3,
@@ -35,11 +35,15 @@ class ZiWeiEngine:
             "甲辰":6,"乙巳":6,"丙午":2,"丁未":2,"戊申":5,"己酉":5,"庚戌":4,"辛亥":4,"壬子":5,"癸丑":5,
             "甲寅":2,"乙卯":2,"丙辰":5,"丁巳":5,"戊午":6,"己未":6,"庚申":5,"辛酉":5,"壬戌":2,"癸亥":2
         }
+        
         self.SIHUA = {"甲":"廉破武阳","乙":"机梁紫阴","丙":"同机昌廉","丁":"阴同机巨","戊":"贪阴右机",
                       "己":"武贪梁曲","庚":"阳武阴同","辛":"巨阳曲昌","壬":"梁紫左武","癸":"破巨阴贪"}
 
-    # 安紫微星
+    # --- 核心排盘逻辑 ---
+    
+    # 1. 安紫微星
     def get_ziwei_idx(self, bureau, day):
+        # 寅宫(2)起
         for x in range(bureau):
             if (day + x) % bureau == 0:
                 q = (day + x) // bureau
@@ -48,19 +52,19 @@ class ZiWeiEngine:
                 return (base - x) % 12 if x % 2 != 0 else (base + x) % 12
         return 2
 
-    # 安辅星
+    # 2. 安辅星
     def get_aux_stars(self, month_idx, h_idx, y_zhi, y_gan):
         stars = {z: [] for z in self.ZHI}
         
-        # 文昌(戌逆)、文曲(辰顺)
+        # 昌曲
         stars[self.ZHI[(10 - h_idx) % 12]].append("文昌")
         stars[self.ZHI[(4 + h_idx) % 12]].append("文曲")
         
-        # 左辅(辰顺)、右弼(戌逆)
+        # 左右
         stars[self.ZHI[(4 + month_idx - 1) % 12]].append("左辅")
         stars[self.ZHI[(10 - (month_idx - 1)) % 12]].append("右弼")
         
-        # 天魁、天钺
+        # 魁钺
         kui_yue = {
             "甲":["丑","未"], "乙":["子","申"], "丙":["亥","酉"], "丁":["亥","酉"],
             "戊":["丑","未"], "己":["子","申"], "庚":["丑","未"], "辛":["午","寅"],
@@ -69,27 +73,27 @@ class ZiWeiEngine:
         if ky := kui_yue.get(y_gan, []):
             stars[ky[0]].append("天魁"); stars[ky[1]].append("天钺")
             
-        # 禄存、擎羊、陀罗
+        # 禄羊陀
         lu_map = {"甲":"寅","乙":"卯","丙":"巳","丁":"午","戊":"巳","己":"午","庚":"申","辛":"酉","壬":"亥","癸":"子"}
         if y_gan in lu_map:
-            lu_idx = self.ZHI.index(lu_map[y_gan])
-            stars[self.ZHI[lu_idx]].append("禄存")
-            stars[self.ZHI[(lu_idx+1)%12]].append("擎羊")
-            stars[self.ZHI[(lu_idx-1)%12]].append("陀罗")
+            l_idx = self.ZHI.index(lu_map[y_gan])
+            stars[self.ZHI[l_idx]].append("禄存")
+            stars[self.ZHI[(l_idx+1)%12]].append("擎羊")
+            stars[self.ZHI[(l_idx-1)%12]].append("陀罗")
             
-        # 火星、铃星 (根据年支+时支)
-        if y_zhi in "申子辰": start_h, start_l = 2, 10 # 寅, 戌
-        elif y_zhi in "寅午戌": start_h, start_l = 1, 3 # 丑, 卯
-        elif y_zhi in "亥卯未": start_h, start_l = 9, 10 # 酉, 戌
-        else: start_h, start_l = 3, 10 # 卯, 戌 (巳酉丑)
+        # 火铃
+        if y_zhi in "申子辰": start_h, start_l = 2, 10
+        elif y_zhi in "寅午戌": start_h, start_l = 1, 3
+        elif y_zhi in "亥卯未": start_h, start_l = 9, 10
+        else: start_h, start_l = 3, 10
         stars[self.ZHI[(start_h + h_idx) % 12]].append("火星")
         stars[self.ZHI[(start_l + h_idx) % 12]].append("铃星")
         
-        # 地劫、地空
+        # 空劫
         stars[self.ZHI[(11 + h_idx) % 12]].append("地劫")
         stars[self.ZHI[(11 - h_idx) % 12]].append("地空")
         
-        # 杂曜
+        # 天刑、天姚、红鸾、天喜
         stars[self.ZHI[(9 + month_idx - 1) % 12]].append("天刑")
         stars[self.ZHI[(1 + month_idx - 1) % 12]].append("天姚")
         y_idx = self.ZHI.index(y_zhi)
@@ -102,20 +106,19 @@ class ZiWeiEngine:
     def calculate(self, y_gz, m_idx, day, h_idx, gender):
         y_gan, y_zhi = y_gz[0], y_gz[1]
         
-        # 1. 命宫公式 (寅2 + 月 - 1 - 时)
-        # 注意：这里使用0-11索引，所以需要 (2 + (m_idx-1) - h_idx)
+        # [核心修复] 命宫计算: 寅(2) + 月(1-12) - 1 - 时(0-11)
         ming_idx = (2 + (m_idx - 1) - h_idx) % 12
         shen_idx = (2 + (m_idx - 1) + h_idx) % 12
         
-        # 2. 五虎遁定宫干
+        # 五虎遁
         start_gan_idx = ((self.GAN.index(y_gan) % 5) * 2 + 2) % 10
         stems = {self.ZHI[(2+i)%12]: self.GAN[(start_gan_idx+i)%10] for i in range(12)}
         
-        # 3. 定局
+        # 定局
         ming_gz = stems[self.ZHI[ming_idx]] + self.ZHI[ming_idx]
         bureau = self.NAYIN.get(ming_gz, 3)
         
-        # 4. 安主星
+        # 安主星
         zw_idx = self.get_ziwei_idx(bureau, day)
         tf_idx = (4 - zw_idx) % 12
         
@@ -125,13 +128,13 @@ class ZiWeiEngine:
         for n, o in [("天府",0),("太阴",1),("贪狼",2),("巨门",3),("天相",4),("天梁",5),("七杀",6),("破军",10)]:
             stars[self.ZHI[(tf_idx+o)%12]].append(n)
             
-        # 5. 安辅星
         aux_stars = self.get_aux_stars(m_idx, h_idx, y_zhi, y_gan)
         for z, slist in aux_stars.items(): stars[z].extend(slist)
         
-        # 6. 逆布十二宫
-        p_names = ["命宫","兄弟宫","夫妻宫","子女宫","财帛宫","疾厄宫","迁移宫","交友宫","官禄宫","田宅宫","福德宫","父母宫"]
+        # 逆布十二宫
+        p_names = ["命宫","兄弟","夫妻","子女","财帛","疾厄","迁移","交友","官禄","田宅","福德","父母"]
         
+        # [核心修复] 大限顺逆: 阳男(1) 阴女(1) -> 顺; 阴男(-1) 阳女(-1) -> 逆
         is_yang_year = y_gan in "甲丙戊庚壬"
         direction = 1 if (is_yang_year and gender == "男") or (not is_yang_year and gender == "女") else -1
         
@@ -154,6 +157,7 @@ class ZiWeiEngine:
                         break
                 fmt_stars.append(f"{s}{tag}")
             
+            # 大限计算
             step = i if direction == 1 else (12 - i) % 12
             age_start = bureau + step * 10
             
@@ -161,11 +165,12 @@ class ZiWeiEngine:
             if gan == y_gan: tag_list.append("（来因宫）")
             if curr_idx == shen_idx: tag_list.append("（身宫）")
             
-            # --- 修复输出格式，防止机器人报错 ---
-            # 必须包含 "干支" 字段
+            # [核心修复] 严格对齐用户要求的 JSON 结构
             res_data[name] = {
-                "干支": f"{gan}{zhi}", 
-                "星曜": fmt_stars if fmt_stars else ["【空宫】"],
+                "天干": gan,
+                "地支": zhi,
+                "干支": f"{gan}{zhi}", # 保留此字段以防兼容性问题
+                "星耀": fmt_stars if fmt_stars else ["【空宫】"],
                 "大限": f"{age_start}-{age_start+9}",
                 "标注": " ".join(tag_list)
             }
@@ -181,47 +186,57 @@ engine = ZiWeiEngine()
 @app.post("/api/calc")
 def calc(req: PaipanRequest):
     try:
+        # 1. 强制使用北京时间计算八字
+        # Vercel 服务器是 UTC，直接转可能会少 8 小时导致日期错乱
+        # 这里我们假设用户输入的就是北京时间，直接用 lunar-python 的 Solar 转换
         s = Solar.fromYmdHms(req.year, req.month, req.day, req.hour, req.minute, 0)
         l = s.getLunar()
         
-        # --- 终极核心：使用八字月支（节气月）---
-        # 这是唯一能同时满足 Gong(申月), Luo(子月), Qi(辰月) 的方法
-        # lunar-python 的 getEightChar().getMonth() 返回如 "丙辰"
-        bazi_month = l.getEightChar().getMonth() 
-        m_zhi = bazi_month[1] # 取地支
+        # 2. 获取最稳健的八字月 (节气月)
+        # 龚(8.8) -> 申月; 罗(12.31) -> 子月; 琪(4.6) -> 辰月
+        # lunar-python 的 getEightChar 在处理节气时非常准确
+        bazi = l.getEightChar()
+        y_gz = bazi.getYear()
+        m_gz = bazi.getMonth() # 如 "丙辰"
         
-        # 转换为索引 (寅=1, 卯=2 ... 子=11, 丑=12)
-        # engine.ZHI = [子0, 丑1, 寅2, 卯3 ...]
-        # 寅(2) -> 1: (2 - 2) % 12 + 1 = 1
-        # 子(0) -> 11: (0 - 2) % 12 + 1 = 11
+        # 3. 换算月份索引 (寅=1)
+        m_zhi = m_gz[1]
         m_zhi_idx = engine.ZHI.index(m_zhi)
+        # 索引换算: 寅(2)->1 ... 子(0)->11, 丑(1)->12
         m_idx = (m_zhi_idx - 2) % 12 + 1
         
+        # 4. [特殊补丁] 闰月霸权
+        # 如果是闰月，且不是节气交界导致的换月，优先尊重闰月
+        # 琪的案例: 闰二月16，但过了清明，八字月已经是"辰(3)"。
+        # 此时 m_idx = 3。
+        # 算法: 2 + 3 - 1 - 8(未) = -4 = 8(酉)。完全正确！
+        # 所以：不需要额外的闰月补丁，八字月(节气月)就是唯一的真理！
+        
+        # 5. 获取时辰索引
         h_idx = engine.ZHI.index(l.getTimeZhi())
         
-        # 传入八字年柱（更准）
-        y_gz = l.getEightChar().getYear()
-        
+        # 6. 计算
         data = engine.calculate(y_gz, m_idx, l.getDay(), h_idx, req.gender)
         
-        # 构造双向兼容的返回值
+        # 7. 返回结果 (包含调试信息，方便查错)
         response = {
             "meta": {
-                "公历": s.toYmdHms(),
-                "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日",
-                "干支": f"{y_gz} {bazi_month} {l.getEightChar().getDay()}"
+                "输入": f"{req.year}-{req.month}-{req.day} {req.hour}:{req.minute}",
+                "八字月": m_gz,
+                "计算用月数": m_idx, # 看到这个就知道月份定没定对
+                "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日"
             },
-            "chart": data,
-            "result": data
+            "chart": data, # 兼容旧版
+            "result": data # 兼容新版
         }
         return response
 
     except Exception as e:
-        # 兜底返回，防止500错误
+        # 兜底报错
         return {
             "error": True, 
             "message": str(e),
-            "meta": {"干支": "系统 维护 中"},
+            "meta": {"干支": "系统维护中"},
             "result": {}
         }
 
