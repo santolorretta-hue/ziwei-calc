@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from lunar_python import Solar
 
-app = FastAPI(title="紫微斗数API (自立他立格判定版)")
+app = FastAPI(title="紫微斗数API (最终定格版)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,6 +89,7 @@ class ZiWeiEngine:
         
         stars[self.ZHI[(9 + month_idx - 1) % 12]].append("天刑")
         stars[self.ZHI[(1 + month_idx - 1) % 12]].append("天姚")
+        
         y_idx = self.ZHI.index(y_zhi)
         luan_idx = (3 - y_idx) % 12
         stars[self.ZHI[luan_idx]].append("红鸾")
@@ -129,12 +130,10 @@ class ZiWeiEngine:
         
         sihua_rules = self.SIHUA.get(y_gan, {})
         
-        # --- 核心判定逻辑 ---
+        # --- 核心：定格变量 ---
         laiyin_palace = ""
         laiyin_type = ""
         laiyin_desc = ""
-        
-        # 定义自立格列表 (六内宫)
         self_reliant_list = ["命宫", "疾厄", "财帛", "官禄", "田宅", "福德"]
         
         res_data = {}
@@ -161,18 +160,17 @@ class ZiWeiEngine:
             
             tag_list = []
             
-            # 判定来因宫
+            # 判定来因与定格
             if gan == y_gan: 
                 tag_list.append("（来因宫）")
                 laiyin_palace = name
-                # 判断定格
                 if name in self_reliant_list:
                     laiyin_type = "自立格"
                     laiyin_desc = "祸福自担，成功靠自己，因果不假外求。"
                 else:
                     laiyin_type = "他立格"
                     laiyin_desc = "这一生的成败、缘分、债务，都与“他人”或“外部环境”深度捆绑。"
-                    
+
             if curr_idx == shen_idx: tag_list.append("（身宫）")
             
             res_data[name] = {
@@ -215,7 +213,7 @@ def calc(req: PaipanRequest):
             m_idx = raw_month
         if m_idx > 12: m_idx = 1
         
-        # 2. 立春定年
+        # 2. 农历年干 (lunar-python默认按立春换年柱，符合1977案例)
         y_gz = l.getYearInGanZhi()
         y_gan = y_gz[0]
         y_zhi = y_gz[1]
