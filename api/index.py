@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from lunar_python import Solar
 
-app = FastAPI(title="紫微斗数API (排盘报告生成版)")
+app = FastAPI(title="紫微斗数API (钦天专家诊断版)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +40,7 @@ class ZiWeiEngine:
             "甲寅":2,"乙卯":2,"丙辰":5,"丁巳":5,"戊午":6,"己未":6,"庚申":5,"辛酉":5,"壬戌":2,"癸亥":2
         }
         
+        # 四化口诀 (全名匹配)
         self.SIHUA = {
             "甲": {"禄":"廉贞", "权":"破军", "科":"武曲", "忌":"太阳"},
             "乙": {"禄":"天机", "权":"天梁", "科":"紫微", "忌":"太阴"},
@@ -101,6 +102,17 @@ class ZiWeiEngine:
         
         return stars
 
+    # [新增] 检查自化逻辑
+    def check_zihua(self, palace_gan, star_list):
+        # 获取该宫干对应的四化规则
+        rules = self.SIHUA.get(palace_gan, {})
+        zihua_results = []
+        for type_key, star_name in rules.items():
+            # 检查该星是否在当前宫位内
+            if star_name in star_list:
+                zihua_results.append(f"自化{type_key}")
+        return zihua_results
+
     def calculate(self, y_gan, y_zhi, m_idx, day, h_idx, gender):
         ming_idx = (2 + (m_idx - 1) - h_idx) % 12
         shen_idx = (2 + (m_idx - 1) + h_idx) % 12
@@ -129,19 +141,20 @@ class ZiWeiEngine:
         is_yang_year = y_gan in "甲丙戊庚壬"
         direction = 1 if (is_yang_year and gender == "男") or (not is_yang_year and gender == "女") else -1
         yin_yang_gender = "阳" if is_yang_year else "阴"
-        full_gender = f"{yin_yang_gender}{gender}" # 如 阳男
+        full_gender = f"{yin_yang_gender}{gender}"
         
         sihua_rules = self.SIHUA.get(y_gan, {})
         
-        # 定格判定
+        # 核心判定变量
         laiyin_palace = ""
         laiyin_type = ""
         laiyin_desc = ""
+        laiyin_index = -1 # 记录来因宫是第几个宫 (0-11)
         self_reliant_list = ["命宫", "疾厄", "财帛", "官禄", "田宅", "福德"]
         
         res_data = {}
-        # 用于构建文本报告的列表
         report_lines = []
+        diagnosis_lines = [] # 专家诊断报告
         
         for i, name in enumerate(p_names):
             curr_idx = (ming_idx - i) % 12
@@ -149,6 +162,19 @@ class ZiWeiEngine:
             gan = stems[zhi]
             
             star_list = stars[zhi]
+            
+            # 1. 检查自化
+            zihua_res = self.check_zihua(gan, star_list)
+            zihua_str = ""
+            if zihua_res:
+                zihua_str = "【" + "、".join(zihua_res) + "】"
+                # 加入诊断报告
+                if "自化忌" in zihua_res:
+                    diagnosis_lines.append(f"⚠️ {name}（{gan}干）出现{zihua_str}：注意破耗、流失、不按常理出牌的变数。")
+                elif "自化禄" in zihua_res:
+                    diagnosis_lines.append(f"ℹ️ {name}（{gan}干）出现{zihua_str}：缘分来去匆匆，易得易失。")
+            
+            # 2. 标记生年四化
             fmt_stars = []
             for s in star_list:
                 tag = ""
@@ -158,6 +184,7 @@ class ZiWeiEngine:
                         break
                 fmt_stars.append(f"{s}{tag}")
             
+            # 3. 大限
             if direction == -1: 
                 limit_rank = i 
             else: 
@@ -168,11 +195,12 @@ class ZiWeiEngine:
             tag_list = []
             special_title = ""
             
-            # 判定来因与定格
+            # 4. 来因宫判定
             if gan == y_gan: 
                 tag_list.append("（来因宫）")
                 special_title += "（同时也是来因宫）"
                 laiyin_palace = name
+                laiyin_index = i # 记录索引
                 if name in self_reliant_list:
                     laiyin_type = "自立格"
                     laiyin_desc = "祸福自担，成功靠自己，因果不假外求。"
@@ -184,21 +212,54 @@ class ZiWeiEngine:
                 tag_list.append("（身宫）")
                 special_title += "（同时也是身宫）"
             
-            # --- 构建数据 ---
+            # 组装数据
             res_data[name] = {
                 "天干": gan,
                 "地支": zhi,
                 "干支": f"{gan}{zhi}", 
                 "星曜": fmt_stars if fmt_stars else ["【空宫】"],
                 "大限": limit_str,
-                "标注": " ".join(tag_list)
+                "标注": " ".join(tag_list),
+                "自化": zihua_res
             }
             
-            # --- 构建文本行 ---
             stars_str = "，".join(fmt_stars) if fmt_stars else "空宫"
-            line = f"{name}{special_title}（大限{limit_str}）天干：{gan}，地支：{zhi}，星耀：{stars_str}"
+            line = f"{name}{special_title}（大限{limit_str}）天干：{gan}，地支：{zhi}，星耀：{stars_str} {zihua_str}"
             report_lines.append(line)
+        
+        # --- 5. 河图数位联动诊断 (1-6, 4-9, 5-10) ---
+        hetu_diag = []
+        # 来因宫是启动点，看它引动了哪条线
+        # p_names 顺序: 命0 兄1 夫2 子3 财4 疾5 迁6 友7 官8 田9 福10 父11
+        if laiyin_index != -1:
+            # 河图对应关系 (索引差值)
+            hetu_pairs = {
+                0: (5, "命疾线 (1-6)"), 5: (0, "命疾线 (1-6)"),
+                3: (8, "子官线 (4-9)"), 8: (3, "子官线 (4-9)"),
+                4: (9, "财田线 (5-10)"), 9: (4, "财田线 (5-10)")
+            }
             
+            if laiyin_index in hetu_pairs:
+                target_idx, line_name = hetu_pairs[laiyin_index]
+                target_name = p_names[target_idx]
+                hetu_diag.append(f"🔗 来因宫在【{laiyin_palace}】，引动【{line_name}】能量：")
+                hetu_diag.append(f"   需重点关注【{laiyin_palace}】与【{target_name}】的体用关系。")
+                if line_name == "子官线 (4-9)":
+                    hetu_diag.append(f"   💡 提示：合伙/桃花/下属（子女）直接决定事业格局（官禄）。")
+                elif line_name == "财田线 (5-10)":
+                    hetu_diag.append(f"   💡 提示：现金流（财帛）与资产库（田宅）的转化是人生关键。")
+        
+        # 整合诊断报告
+        final_diagnosis = []
+        if hetu_diag:
+            final_diagnosis.append("【河图数位联动】")
+            final_diagnosis.extend(hetu_diag)
+            final_diagnosis.append("")
+        
+        if diagnosis_lines:
+            final_diagnosis.append("【全盘自化风险扫描】")
+            final_diagnosis.extend(diagnosis_lines)
+        
         return {
             "局数": bureau_name,
             "性别描述": full_gender,
@@ -210,7 +271,8 @@ class ZiWeiEngine:
                 "格论": laiyin_desc
             },
             "数据": res_data,
-            "文本报告": report_lines # 核心输出
+            "文本报告": report_lines,
+            "专家诊断": final_diagnosis
         }
 
 engine = ZiWeiEngine()
@@ -239,33 +301,35 @@ def calc(req: PaipanRequest):
         
         h_idx = engine.ZHI.index(l.getTimeZhi())
         
-        # 3. 计算属相与年龄
         zodiac = engine.ZODIAC.get(y_zhi)
         current_year = datetime.datetime.now().year
-        age = current_year - req.year + 1 # 虚岁
+        age = current_year - req.year + 1
         
-        # 4. 计算排盘
         data = engine.calculate(y_gan, y_zhi, m_idx, day, h_idx, req.gender)
         
-        # 5. 组装头部信息
-        # 格式：木三局，阳男，干支：庚午年，年龄：36岁，属相：马，阴历（农历）：1990.11.15，阳历（公历）：1990.12.31，时辰：巳时
+        # 组装文本
         header = f"{data['局数']}，{data['性别描述']}，干支：{y_gz}年，年龄：{age}岁，属相：{zodiac}，阴历（农历）：{l.getYear()}.{abs(raw_month)}.{day}，阳历（公历）：{req.year}.{req.month}.{req.day}，时辰：{l.getTimeZhi()}时"
         
-        # 6. 组合完整文本
-        full_text_output = header + "\n\n" + "\n\n".join(data["文本报告"])
+        # 核心定格
+        core_info = f"🟦 格局判定：{data['核心']['来因宫位']}来因 -> 【{data['核心']['定格']}】\n   {data['核心']['格论']}"
         
-        # 7. 补上生年四化提示
+        full_text_output = header + "\n\n" + core_info + "\n\n" + "\n\n".join(data["文本报告"])
+        
         sihua_info = engine.SIHUA.get(y_gan, {})
         sihua_desc = f"🔴 {y_gan}干生年四化：{sihua_info.get('禄')}禄，{sihua_info.get('权')}权，{sihua_info.get('科')}科，{sihua_info.get('忌')}忌"
         full_text_output += f"\n\n{sihua_desc}"
         
+        # 加上专家诊断
+        if data["专家诊断"]:
+             full_text_output += "\n\n──────────────\n🔎 钦天专家诊断：\n" + "\n".join(data["专家诊断"])
+
         response = {
             "meta": {
                 "公历": s.toYmdHms(),
                 "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日",
                 "四化重点": sihua_desc
             },
-            "formatted_output": full_text_output, # 直接让机器人读这个字段！
+            "formatted_output": full_text_output,
             "result": data["数据"]
         }
         return response
@@ -274,7 +338,7 @@ def calc(req: PaipanRequest):
         return {
             "error": True, 
             "message": str(e),
-            "formatted_output": "排盘计算异常，请检查输入时间。",
+            "formatted_output": f"排盘计算异常：{str(e)}",
             "result": {}
         }
 
