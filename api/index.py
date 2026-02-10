@@ -1,10 +1,11 @@
 import uvicorn
+import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from lunar_python import Solar
 
-app = FastAPI(title="紫微斗数API (最终定格版)")
+app = FastAPI(title="紫微斗数API (排盘报告生成版)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,6 +26,10 @@ class ZiWeiEngine:
     def __init__(self):
         self.ZHI = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
         self.GAN = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
+        self.ZODIAC = {"子":"鼠", "丑":"牛", "寅":"虎", "卯":"兔", "辰":"龙", "巳":"蛇", "午":"马", "未":"羊", "申":"猴", "酉":"鸡", "戌":"狗", "亥":"猪"}
+        
+        # 纳音数 -> 五行局名
+        self.BUREAU_MAP = {2:"水二局", 3:"木三局", 4:"金四局", 5:"土五局", 6:"火六局"}
         
         self.NAYIN = {
             "甲子":4,"乙丑":4,"丙寅":6,"丁卯":6,"戊辰":5,"己巳":5,"庚午":5,"辛未":5,"壬申":4,"癸酉":4,
@@ -35,7 +40,6 @@ class ZiWeiEngine:
             "甲寅":2,"乙卯":2,"丙辰":5,"丁巳":5,"戊午":6,"己未":6,"庚申":5,"辛酉":5,"壬戌":2,"癸亥":2
         }
         
-        # 四化表
         self.SIHUA = {
             "甲": {"禄":"廉贞", "权":"破军", "科":"武曲", "忌":"太阳"},
             "乙": {"禄":"天机", "权":"天梁", "科":"紫微", "忌":"太阴"},
@@ -98,20 +102,17 @@ class ZiWeiEngine:
         return stars
 
     def calculate(self, y_gan, y_zhi, m_idx, day, h_idx, gender):
-        # 1. 命宫
         ming_idx = (2 + (m_idx - 1) - h_idx) % 12
         shen_idx = (2 + (m_idx - 1) + h_idx) % 12
         
-        # 2. 五虎遁
         start_gan_idx = ((self.GAN.index(y_gan) % 5) * 2 + 2) % 10
         stems = {self.ZHI[(2+i)%12]: self.GAN[(start_gan_idx+i)%10] for i in range(12)}
         
-        # 3. 定局
         ming_gz = stems[self.ZHI[ming_idx]] + self.ZHI[ming_idx]
-        bureau = self.NAYIN.get(ming_gz, 3)
+        bureau_num = self.NAYIN.get(ming_gz, 3)
+        bureau_name = self.BUREAU_MAP.get(bureau_num, f"{bureau_num}局")
         
-        # 4. 安主星
-        zw_idx = self.get_ziwei_idx(bureau, day)
+        zw_idx = self.get_ziwei_idx(bureau_num, day)
         tf_idx = (4 - zw_idx) % 12
         
         stars = {z: [] for z in self.ZHI}
@@ -127,16 +128,21 @@ class ZiWeiEngine:
         
         is_yang_year = y_gan in "甲丙戊庚壬"
         direction = 1 if (is_yang_year and gender == "男") or (not is_yang_year and gender == "女") else -1
+        yin_yang_gender = "阳" if is_yang_year else "阴"
+        full_gender = f"{yin_yang_gender}{gender}" # 如 阳男
         
         sihua_rules = self.SIHUA.get(y_gan, {})
         
-        # --- 核心：定格变量 ---
+        # 定格判定
         laiyin_palace = ""
         laiyin_type = ""
         laiyin_desc = ""
         self_reliant_list = ["命宫", "疾厄", "财帛", "官禄", "田宅", "福德"]
         
         res_data = {}
+        # 用于构建文本报告的列表
+        report_lines = []
+        
         for i, name in enumerate(p_names):
             curr_idx = (ming_idx - i) % 12
             zhi = self.ZHI[curr_idx]
@@ -148,7 +154,7 @@ class ZiWeiEngine:
                 tag = ""
                 for type_key, star_name in sihua_rules.items():
                     if star_name == s:
-                        tag = f"({type_key})"
+                        tag = f"（化{type_key}）"
                         break
                 fmt_stars.append(f"{s}{tag}")
             
@@ -156,13 +162,16 @@ class ZiWeiEngine:
                 limit_rank = i 
             else: 
                 limit_rank = (12 - i) % 12
-            age_start = bureau + limit_rank * 10
+            age_start = bureau_num + limit_rank * 10
+            limit_str = f"{age_start}-{age_start+9}岁"
             
             tag_list = []
+            special_title = ""
             
             # 判定来因与定格
             if gan == y_gan: 
                 tag_list.append("（来因宫）")
+                special_title += "（同时也是来因宫）"
                 laiyin_palace = name
                 if name in self_reliant_list:
                     laiyin_type = "自立格"
@@ -171,19 +180,28 @@ class ZiWeiEngine:
                     laiyin_type = "他立格"
                     laiyin_desc = "这一生的成败、缘分、债务，都与“他人”或“外部环境”深度捆绑。"
 
-            if curr_idx == shen_idx: tag_list.append("（身宫）")
+            if curr_idx == shen_idx: 
+                tag_list.append("（身宫）")
+                special_title += "（同时也是身宫）"
             
+            # --- 构建数据 ---
             res_data[name] = {
                 "天干": gan,
                 "地支": zhi,
                 "干支": f"{gan}{zhi}", 
                 "星曜": fmt_stars if fmt_stars else ["【空宫】"],
-                "大限": f"{age_start}-{age_start+9}",
+                "大限": limit_str,
                 "标注": " ".join(tag_list)
             }
             
+            # --- 构建文本行 ---
+            stars_str = "，".join(fmt_stars) if fmt_stars else "空宫"
+            line = f"{name}{special_title}（大限{limit_str}）天干：{gan}，地支：{zhi}，星耀：{stars_str}"
+            report_lines.append(line)
+            
         return {
-            "局数": f"{bureau}局",
+            "局数": bureau_name,
+            "性别描述": full_gender,
             "核心": {
                 "命宫": self.ZHI[ming_idx], 
                 "来因": y_gan,
@@ -191,7 +209,8 @@ class ZiWeiEngine:
                 "定格": laiyin_type,
                 "格论": laiyin_desc
             },
-            "数据": res_data
+            "数据": res_data,
+            "文本报告": report_lines # 核心输出
         }
 
 engine = ZiWeiEngine()
@@ -213,27 +232,41 @@ def calc(req: PaipanRequest):
             m_idx = raw_month
         if m_idx > 12: m_idx = 1
         
-        # 2. 农历年干 (lunar-python默认按立春换年柱，符合1977案例)
+        # 2. 农历年干
         y_gz = l.getYearInGanZhi()
         y_gan = y_gz[0]
         y_zhi = y_gz[1]
         
         h_idx = engine.ZHI.index(l.getTimeZhi())
         
+        # 3. 计算属相与年龄
+        zodiac = engine.ZODIAC.get(y_zhi)
+        current_year = datetime.datetime.now().year
+        age = current_year - req.year + 1 # 虚岁
+        
+        # 4. 计算排盘
         data = engine.calculate(y_gan, y_zhi, m_idx, day, h_idx, req.gender)
         
+        # 5. 组装头部信息
+        # 格式：木三局，阳男，干支：庚午年，年龄：36岁，属相：马，阴历（农历）：1990.11.15，阳历（公历）：1990.12.31，时辰：巳时
+        header = f"{data['局数']}，{data['性别描述']}，干支：{y_gz}年，年龄：{age}岁，属相：{zodiac}，阴历（农历）：{l.getYear()}.{abs(raw_month)}.{day}，阳历（公历）：{req.year}.{req.month}.{req.day}，时辰：{l.getTimeZhi()}时"
+        
+        # 6. 组合完整文本
+        full_text_output = header + "\n\n" + "\n\n".join(data["文本报告"])
+        
+        # 7. 补上生年四化提示
         sihua_info = engine.SIHUA.get(y_gan, {})
-        sihua_desc = f"{y_gan}干四化: {sihua_info.get('禄')}禄, {sihua_info.get('权')}权, {sihua_info.get('科')}科, {sihua_info.get('忌')}忌"
+        sihua_desc = f"🔴 {y_gan}干生年四化：{sihua_info.get('禄')}禄，{sihua_info.get('权')}权，{sihua_info.get('科')}科，{sihua_info.get('忌')}忌"
+        full_text_output += f"\n\n{sihua_desc}"
         
         response = {
             "meta": {
                 "公历": s.toYmdHms(),
                 "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日",
-                "干支": f"{y_gz} {l.getMonthInGanZhi()} {l.getDayInGanZhi()}",
                 "四化重点": sihua_desc
             },
-            "chart": data,
-            "result": data
+            "formatted_output": full_text_output, # 直接让机器人读这个字段！
+            "result": data["数据"]
         }
         return response
 
@@ -241,7 +274,7 @@ def calc(req: PaipanRequest):
         return {
             "error": True, 
             "message": str(e),
-            "meta": {"干支": "维护中"},
+            "formatted_output": "排盘计算异常，请检查输入时间。",
             "result": {}
         }
 
