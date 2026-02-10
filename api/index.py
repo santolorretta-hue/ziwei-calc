@@ -1,14 +1,10 @@
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-# 引入核心库，如果环境没配好，这里就会报错
-try:
-    from lunar_python import Solar
-except ImportError:
-    Solar = None
+from lunar_python import Solar
 
-app = FastAPI()
+app = FastAPI(title="钦天门紫微斗数API (八字节气内核版)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,6 +25,8 @@ class ZiWeiEngine:
     def __init__(self):
         self.ZHI = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
         self.GAN = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
+        
+        # 纳音五行局
         self.NAYIN = {
             "甲子":4,"乙丑":4,"丙寅":6,"丁卯":6,"戊辰":5,"己巳":5,"庚午":5,"辛未":5,"壬申":4,"癸酉":4,
             "甲戌":6,"乙亥":6,"丙子":2,"丁丑":2,"戊寅":5,"己卯":5,"庚辰":4,"辛巳":4,"壬午":5,"癸未":3,
@@ -40,140 +38,192 @@ class ZiWeiEngine:
         self.SIHUA = {"甲":"廉破武阳","乙":"机梁紫阴","丙":"同机昌廉","丁":"阴同机巨","戊":"贪阴右机",
                       "己":"武贪梁曲","庚":"阳武阴同","辛":"巨阳曲昌","壬":"梁紫左武","癸":"破巨阴贪"}
 
+    # 安紫微星
     def get_ziwei_idx(self, bureau, day):
         for x in range(bureau):
             if (day + x) % bureau == 0:
                 q = (day + x) // bureau
                 base = (2 + q - 1) % 12
+                # x为奇数减，偶数加
                 return (base - x) % 12 if x % 2 != 0 else (base + x) % 12
         return 2
 
-    def get_stars(self, m_idx, h_idx, y_zhi, y_gan, bureau, day):
-        # 基础星曜计算
-        zw_idx = self.get_ziwei_idx(bureau, day)
-        tf_idx = (4 - zw_idx) % 12
+    # 安辅星
+    def get_aux_stars(self, month_idx, h_idx, y_zhi, y_gan):
         stars = {z: [] for z in self.ZHI}
         
-        # 主星
+        # 文昌(戌逆)、文曲(辰顺)
+        stars[self.ZHI[(10 - h_idx) % 12]].append("文昌")
+        stars[self.ZHI[(4 + h_idx) % 12]].append("文曲")
+        
+        # 左辅(辰顺)、右弼(戌逆)
+        stars[self.ZHI[(4 + month_idx - 1) % 12]].append("左辅")
+        stars[self.ZHI[(10 - (month_idx - 1)) % 12]].append("右弼")
+        
+        # 天魁、天钺
+        kui_yue = {
+            "甲":["丑","未"], "乙":["子","申"], "丙":["亥","酉"], "丁":["亥","酉"],
+            "戊":["丑","未"], "己":["子","申"], "庚":["丑","未"], "辛":["午","寅"],
+            "壬":["卯","巳"], "癸":["卯","巳"]
+        }
+        if ky := kui_yue.get(y_gan, []):
+            stars[ky[0]].append("天魁"); stars[ky[1]].append("天钺")
+            
+        # 禄存、擎羊、陀罗
+        lu_map = {"甲":"寅","乙":"卯","丙":"巳","丁":"午","戊":"巳","己":"午","庚":"申","辛":"酉","壬":"亥","癸":"子"}
+        if y_gan in lu_map:
+            lu_idx = self.ZHI.index(lu_map[y_gan])
+            stars[self.ZHI[lu_idx]].append("禄存")
+            stars[self.ZHI[(lu_idx+1)%12]].append("擎羊")
+            stars[self.ZHI[(lu_idx-1)%12]].append("陀罗")
+            
+        # 火星、铃星 (根据年支+时支)
+        if y_zhi in "申子辰": start_h, start_l = 2, 10 # 寅, 戌
+        elif y_zhi in "寅午戌": start_h, start_l = 1, 3 # 丑, 卯
+        elif y_zhi in "亥卯未": start_h, start_l = 9, 10 # 酉, 戌
+        else: start_h, start_l = 3, 10 # 卯, 戌 (巳酉丑)
+        stars[self.ZHI[(start_h + h_idx) % 12]].append("火星")
+        stars[self.ZHI[(start_l + h_idx) % 12]].append("铃星")
+        
+        # 地劫、地空
+        stars[self.ZHI[(11 + h_idx) % 12]].append("地劫")
+        stars[self.ZHI[(11 - h_idx) % 12]].append("地空")
+        
+        # 杂曜
+        stars[self.ZHI[(9 + month_idx - 1) % 12]].append("天刑")
+        stars[self.ZHI[(1 + month_idx - 1) % 12]].append("天姚")
+        y_idx = self.ZHI.index(y_zhi)
+        luan_idx = (3 - y_idx) % 12
+        stars[self.ZHI[luan_idx]].append("红鸾")
+        stars[self.ZHI[(luan_idx + 6) % 12]].append("天喜")
+        
+        return stars
+
+    def calculate(self, y_gz, m_idx, day, h_idx, gender):
+        y_gan, y_zhi = y_gz[0], y_gz[1]
+        
+        # 1. 命宫公式 (寅2 + 月 - 1 - 时)
+        # 注意：这里使用0-11索引，所以需要 (2 + (m_idx-1) - h_idx)
+        ming_idx = (2 + (m_idx - 1) - h_idx) % 12
+        shen_idx = (2 + (m_idx - 1) + h_idx) % 12
+        
+        # 2. 五虎遁定宫干
+        start_gan_idx = ((self.GAN.index(y_gan) % 5) * 2 + 2) % 10
+        stems = {self.ZHI[(2+i)%12]: self.GAN[(start_gan_idx+i)%10] for i in range(12)}
+        
+        # 3. 定局
+        ming_gz = stems[self.ZHI[ming_idx]] + self.ZHI[ming_idx]
+        bureau = self.NAYIN.get(ming_gz, 3)
+        
+        # 4. 安主星
+        zw_idx = self.get_ziwei_idx(bureau, day)
+        tf_idx = (4 - zw_idx) % 12
+        
+        stars = {z: [] for z in self.ZHI}
         for n, o in [("紫微",0),("天机",1),("太阳",3),("武曲",4),("天同",5),("廉贞",8)]:
             stars[self.ZHI[(zw_idx-o)%12]].append(n)
         for n, o in [("天府",0),("太阴",1),("贪狼",2),("巨门",3),("天相",4),("天梁",5),("七杀",6),("破军",10)]:
             stars[self.ZHI[(tf_idx+o)%12]].append(n)
             
-        # 辅星
-        stars[self.ZHI[(10 - h_idx) % 12]].append("文昌")
-        stars[self.ZHI[(4 + h_idx) % 12]].append("文曲")
-        stars[self.ZHI[(4 + m_idx - 1) % 12]].append("左辅")
-        stars[self.ZHI[(10 - (m_idx - 1)) % 12]].append("右弼")
+        # 5. 安辅星
+        aux_stars = self.get_aux_stars(m_idx, h_idx, y_zhi, y_gan)
+        for z, slist in aux_stars.items(): stars[z].extend(slist)
         
-        ky = {"甲":["丑","未"], "乙":["子","申"], "丙":["亥","酉"], "丁":["亥","酉"],"戊":["丑","未"], "己":["子","申"], "庚":["丑","未"], "辛":["午","寅"],"壬":["卯","巳"], "癸":["卯","巳"]}.get(y_gan, [])
-        if ky: stars[ky[0]].append("天魁"); stars[ky[1]].append("天钺")
+        # 6. 逆布十二宫
+        p_names = ["命宫","兄弟宫","夫妻宫","子女宫","财帛宫","疾厄宫","迁移宫","交友宫","官禄宫","田宅宫","福德宫","父母宫"]
         
-        lu_map = {"甲":"寅","乙":"卯","丙":"巳","丁":"午","戊":"巳","己":"午","庚":"申","辛":"酉","壬":"亥","癸":"子"}
-        if y_gan in lu_map:
-            l_idx = self.ZHI.index(lu_map[y_gan])
-            stars[self.ZHI[l_idx]].append("禄存")
-            stars[self.ZHI[(l_idx+1)%12]].append("擎羊")
-            stars[self.ZHI[(l_idx-1)%12]].append("陀罗")
-            
-        return stars
-
-    def calculate(self, y_gz, m_idx, day, h_idx, gender):
-        y_gan, y_zhi = y_gz[0], y_gz[1]
-        ming_idx = (2 + (m_idx - 1) - h_idx) % 12
-        shen_idx = (2 + (m_idx - 1) + h_idx) % 12
+        is_yang_year = y_gan in "甲丙戊庚壬"
+        direction = 1 if (is_yang_year and gender == "男") or (not is_yang_year and gender == "女") else -1
         
-        start_gan_idx = ((self.GAN.index(y_gan) % 5) * 2 + 2) % 10
-        stems = {self.ZHI[(2+i)%12]: self.GAN[(start_gan_idx+i)%10] for i in range(12)}
+        sihua_str = self.SIHUA.get(y_gan, "")
+        sihua_map = {"禄":sihua_str[0],"权":sihua_str[1],"科":sihua_str[2],"忌":sihua_str[3]}
         
-        ming_gz = stems[self.ZHI[ming_idx]] + self.ZHI[ming_idx]
-        bureau = self.NAYIN.get(ming_gz, 3)
-        
-        stars = self.get_stars(m_idx, h_idx, y_zhi, y_gan, bureau, day)
-        
-        p_names = ["命宫","兄弟","夫妻","子女","财帛","疾厄","迁移","交友","官禄","田宅","福德","父母"]
-        is_yang = y_gan in "甲丙戊庚壬"
-        direction = 1 if (is_yang and gender=="男") or (not is_yang and gender=="女") else -1
-        
-        sihua = self.SIHUA.get(y_gan, "")
-        s_map = {"禄":sihua[0],"权":sihua[1],"科":sihua[2],"忌":sihua[3]} if sihua else {}
-        
-        res = {}
+        res_data = {}
         for i, name in enumerate(p_names):
-            curr = (ming_idx - i) % 12
-            zhi = self.ZHI[curr]
+            curr_idx = (ming_idx - i) % 12
+            zhi = self.ZHI[curr_idx]
             gan = stems[zhi]
             
-            s_list = stars[zhi]
-            fmt = []
-            for s in s_list:
+            star_list = stars[zhi]
+            fmt_stars = []
+            for s in star_list:
                 tag = ""
-                for k,v in s_map.items():
-                    if v==s: tag=f"({k})"
-                fmt.append(f"{s}{tag}")
+                for k, v in sihua_map.items():
+                    if v == s: 
+                        tag = f"化{k}"
+                        break
+                fmt_stars.append(f"{s}{tag}")
             
             step = i if direction == 1 else (12 - i) % 12
-            age = bureau + step * 10
+            age_start = bureau + step * 10
             
-            tags = []
-            if gan == y_gan: tags.append("【来因】")
-            if curr == shen_idx: tags.append("【身宫】")
+            tag_list = []
+            if gan == y_gan: tag_list.append("（来因宫）")
+            if curr_idx == shen_idx: tag_list.append("（身宫）")
             
-            res[name] = {
-                "干支": f"{gan}{zhi}",
-                "星曜": fmt if fmt else ["【空宫】"],
-                "大限": f"{age}-{age+9}",
-                "标注": " ".join(tags)
+            # --- 修复输出格式，防止机器人报错 ---
+            # 必须包含 "干支" 字段
+            res_data[name] = {
+                "干支": f"{gan}{zhi}", 
+                "星曜": fmt_stars if fmt_stars else ["【空宫】"],
+                "大限": f"{age_start}-{age_start+9}",
+                "标注": " ".join(tag_list)
             }
             
-        return {"局数": f"{bureau}局", "核心": {"命宫": self.ZHI[ming_idx]}, "数据": res}
+        return {
+            "局数": f"{bureau}局",
+            "核心": {"命宫": self.ZHI[ming_idx], "来因": y_gan},
+            "数据": res_data
+        }
 
 engine = ZiWeiEngine()
 
 @app.post("/api/calc")
-async def calc(req: PaipanRequest):
-    # 终极兜底：检查库是否安装
-    if Solar is None:
-        return {"error": "Dependencies missing", "message": "lunar-python not installed"}
-
+def calc(req: PaipanRequest):
     try:
         s = Solar.fromYmdHms(req.year, req.month, req.day, req.hour, req.minute, 0)
         l = s.getLunar()
         
-        # 1. 获取干支 (使用八字接口，最稳)
-        bazi = l.getEightChar()
-        y_gz = bazi.getYear()
-        m_gz = bazi.getMonth()
-        d_gz = bazi.getDay()
+        # --- 终极核心：使用八字月支（节气月）---
+        # 这是唯一能同时满足 Gong(申月), Luo(子月), Qi(辰月) 的方法
+        # lunar-python 的 getEightChar().getMonth() 返回如 "丙辰"
+        bazi_month = l.getEightChar().getMonth() 
+        m_zhi = bazi_month[1] # 取地支
         
-        # 2. 计算月份索引 (节气月逻辑)
-        # 寅=1, 卯=2...
-        m_zhi = m_gz[1]
-        m_idx = (engine.ZHI.index(m_zhi) - 2) % 12 + 1
-        
-        # 3. 闰月霸权
-        if l.getMonth() < 0: m_idx = abs(l.getMonth())
+        # 转换为索引 (寅=1, 卯=2 ... 子=11, 丑=12)
+        # engine.ZHI = [子0, 丑1, 寅2, 卯3 ...]
+        # 寅(2) -> 1: (2 - 2) % 12 + 1 = 1
+        # 子(0) -> 11: (0 - 2) % 12 + 1 = 11
+        m_zhi_idx = engine.ZHI.index(m_zhi)
+        m_idx = (m_zhi_idx - 2) % 12 + 1
         
         h_idx = engine.ZHI.index(l.getTimeZhi())
         
+        # 传入八字年柱（更准）
+        y_gz = l.getEightChar().getYear()
+        
         data = engine.calculate(y_gz, m_idx, l.getDay(), h_idx, req.gender)
         
-        # 4. 返回完整结构
-        return {
+        # 构造双向兼容的返回值
+        response = {
             "meta": {
                 "公历": s.toYmdHms(),
                 "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日",
-                "干支": f"{y_gz} {m_gz} {d_gz}"
+                "干支": f"{y_gz} {bazi_month} {l.getEightChar().getDay()}"
             },
             "chart": data,
             "result": data
         }
-        
+        return response
+
     except Exception as e:
-        # 万一报错，返回 JSON 而不是 500
+        # 兜底返回，防止500错误
         return {
-            "error": True,
+            "error": True, 
             "message": str(e),
             "meta": {"干支": "系统 维护 中"},
             "result": {}
         }
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
