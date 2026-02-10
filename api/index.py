@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from lunar_python import Solar
 
-app = FastAPI(title="紫微斗数API (钦天专家诊断版)")
+app = FastAPI(title="紫微斗数API (全功能专家诊断版)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,7 +28,6 @@ class ZiWeiEngine:
         self.GAN = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
         self.ZODIAC = {"子":"鼠", "丑":"牛", "寅":"虎", "卯":"兔", "辰":"龙", "巳":"蛇", "午":"马", "未":"羊", "申":"猴", "酉":"鸡", "戌":"狗", "亥":"猪"}
         
-        # 纳音数 -> 五行局名
         self.BUREAU_MAP = {2:"水二局", 3:"木三局", 4:"金四局", 5:"土五局", 6:"火六局"}
         
         self.NAYIN = {
@@ -40,7 +39,6 @@ class ZiWeiEngine:
             "甲寅":2,"乙卯":2,"丙辰":5,"丁巳":5,"戊午":6,"己未":6,"庚申":5,"辛酉":5,"壬戌":2,"癸亥":2
         }
         
-        # 四化口诀 (全名匹配)
         self.SIHUA = {
             "甲": {"禄":"廉贞", "权":"破军", "科":"武曲", "忌":"太阳"},
             "乙": {"禄":"天机", "权":"天梁", "科":"紫微", "忌":"太阴"},
@@ -64,51 +62,38 @@ class ZiWeiEngine:
 
     def get_aux_stars(self, month_idx, h_idx, y_zhi, y_gan):
         stars = {z: [] for z in self.ZHI}
-        
         stars[self.ZHI[(10 - h_idx) % 12]].append("文昌")
         stars[self.ZHI[(4 + h_idx) % 12]].append("文曲")
         stars[self.ZHI[(4 + month_idx - 1) % 12]].append("左辅")
         stars[self.ZHI[(10 - (month_idx - 1)) % 12]].append("右弼")
-        
-        ky = {"甲":["丑","未"], "乙":["子","申"], "丙":["亥","酉"], "丁":["亥","酉"],
-              "戊":["丑","未"], "己":["子","申"], "庚":["丑","未"], "辛":["午","寅"],
-              "壬":["卯","巳"], "癸":["卯","巳"]}.get(y_gan, [])
+        ky = {"甲":["丑","未"], "乙":["子","申"], "丙":["亥","酉"], "丁":["亥","酉"], "戊":["丑","未"], "己":["子","申"], "庚":["丑","未"], "辛":["午","寅"], "壬":["卯","巳"], "癸":["卯","巳"]}.get(y_gan, [])
         if ky: stars[ky[0]].append("天魁"); stars[ky[1]].append("天钺")
-        
         lu_map = {"甲":"寅","乙":"卯","丙":"巳","丁":"午","戊":"巳","己":"午","庚":"申","辛":"酉","壬":"亥","癸":"子"}
         if y_gan in lu_map:
             l_idx = self.ZHI.index(lu_map[y_gan])
             stars[self.ZHI[l_idx]].append("禄存")
             stars[self.ZHI[(l_idx+1)%12]].append("擎羊")
             stars[self.ZHI[(l_idx-1)%12]].append("陀罗")
-            
         if y_zhi in "申子辰": start_h, start_l = 2, 10
         elif y_zhi in "寅午戌": start_h, start_l = 1, 3
         elif y_zhi in "亥卯未": start_h, start_l = 9, 10
         else: start_h, start_l = 3, 10
         stars[self.ZHI[(start_h + h_idx) % 12]].append("火星")
         stars[self.ZHI[(start_l + h_idx) % 12]].append("铃星")
-        
         stars[self.ZHI[(11 + h_idx) % 12]].append("地劫")
         stars[self.ZHI[(11 - h_idx) % 12]].append("地空")
-        
         stars[self.ZHI[(9 + month_idx - 1) % 12]].append("天刑")
         stars[self.ZHI[(1 + month_idx - 1) % 12]].append("天姚")
-        
         y_idx = self.ZHI.index(y_zhi)
         luan_idx = (3 - y_idx) % 12
         stars[self.ZHI[luan_idx]].append("红鸾")
         stars[self.ZHI[(luan_idx + 6) % 12]].append("天喜")
-        
         return stars
 
-    # [新增] 检查自化逻辑
     def check_zihua(self, palace_gan, star_list):
-        # 获取该宫干对应的四化规则
         rules = self.SIHUA.get(palace_gan, {})
         zihua_results = []
         for type_key, star_name in rules.items():
-            # 检查该星是否在当前宫位内
             if star_name in star_list:
                 zihua_results.append(f"自化{type_key}")
         return zihua_results
@@ -145,36 +130,33 @@ class ZiWeiEngine:
         
         sihua_rules = self.SIHUA.get(y_gan, {})
         
-        # 核心判定变量
         laiyin_palace = ""
         laiyin_type = ""
         laiyin_desc = ""
-        laiyin_index = -1 # 记录来因宫是第几个宫 (0-11)
+        laiyin_index = -1 
         self_reliant_list = ["命宫", "疾厄", "财帛", "官禄", "田宅", "福德"]
         
         res_data = {}
         report_lines = []
-        diagnosis_lines = [] # 专家诊断报告
+        diagnosis_lines = [] 
         
         for i, name in enumerate(p_names):
             curr_idx = (ming_idx - i) % 12
             zhi = self.ZHI[curr_idx]
             gan = stems[zhi]
-            
             star_list = stars[zhi]
             
-            # 1. 检查自化
+            # 1. 自化检查
             zihua_res = self.check_zihua(gan, star_list)
             zihua_str = ""
             if zihua_res:
                 zihua_str = "【" + "、".join(zihua_res) + "】"
-                # 加入诊断报告
                 if "自化忌" in zihua_res:
                     diagnosis_lines.append(f"⚠️ {name}（{gan}干）出现{zihua_str}：注意破耗、流失、不按常理出牌的变数。")
                 elif "自化禄" in zihua_res:
                     diagnosis_lines.append(f"ℹ️ {name}（{gan}干）出现{zihua_str}：缘分来去匆匆，易得易失。")
             
-            # 2. 标记生年四化
+            # 2. 星曜排布
             fmt_stars = []
             for s in star_list:
                 tag = ""
@@ -184,23 +166,20 @@ class ZiWeiEngine:
                         break
                 fmt_stars.append(f"{s}{tag}")
             
-            # 3. 大限
-            if direction == -1: 
-                limit_rank = i 
-            else: 
-                limit_rank = (12 - i) % 12
+            if direction == -1: limit_rank = i 
+            else: limit_rank = (12 - i) % 12
             age_start = bureau_num + limit_rank * 10
             limit_str = f"{age_start}-{age_start+9}岁"
             
             tag_list = []
             special_title = ""
             
-            # 4. 来因宫判定
+            # 3. 来因判定
             if gan == y_gan: 
                 tag_list.append("（来因宫）")
                 special_title += "（同时也是来因宫）"
                 laiyin_palace = name
-                laiyin_index = i # 记录索引
+                laiyin_index = i
                 if name in self_reliant_list:
                     laiyin_type = "自立格"
                     laiyin_desc = "祸福自担，成功靠自己，因果不假外求。"
@@ -212,63 +191,67 @@ class ZiWeiEngine:
                 tag_list.append("（身宫）")
                 special_title += "（同时也是身宫）"
             
-            # 组装数据
             res_data[name] = {
-                "天干": gan,
-                "地支": zhi,
-                "干支": f"{gan}{zhi}", 
+                "天干": gan, "地支": zhi, "干支": f"{gan}{zhi}", 
                 "星曜": fmt_stars if fmt_stars else ["【空宫】"],
-                "大限": limit_str,
-                "标注": " ".join(tag_list),
-                "自化": zihua_res
+                "大限": limit_str, "标注": " ".join(tag_list), "自化": zihua_res
             }
             
             stars_str = "，".join(fmt_stars) if fmt_stars else "空宫"
             line = f"{name}{special_title}（大限{limit_str}）天干：{gan}，地支：{zhi}，星耀：{stars_str} {zihua_str}"
             report_lines.append(line)
         
-        # --- 5. 河图数位联动诊断 (1-6, 4-9, 5-10) ---
+        # --- 4. 修复：全覆盖的河图诊断 ---
         hetu_diag = []
-        # 来因宫是启动点，看它引动了哪条线
-        # p_names 顺序: 命0 兄1 夫2 子3 财4 疾5 迁6 友7 官8 田9 福10 父11
         if laiyin_index != -1:
-            # 河图对应关系 (索引差值)
+            # 完整的河图六线对应关系
             hetu_pairs = {
                 0: (5, "命疾线 (1-6)"), 5: (0, "命疾线 (1-6)"),
-                3: (8, "子官线 (4-9)"), 8: (3, "子官线 (4-9)"),
-                4: (9, "财田线 (5-10)"), 9: (4, "财田线 (5-10)")
+                1: (6, "兄友线 (2-7)"), 6: (1, "兄友线 (2-7)"),
+                2: (7, "夫官线 (3-8)"), 7: (2, "夫官线 (3-8)"),
+                3: (8, "子田线 (4-9)"), 8: (3, "子田线 (4-9)"),
+                4: (9, "财福线 (5-10)"), 9: (4, "财福线 (5-10)"),
+                10: (5, "福财线 (11-6 借对宫)"), 11: (6, "父迁线 (6-12)") # 补全逻辑
             }
+            # 简单版：直接找对宫或河图生成数 (差5)
+            # 0(命)-5(疾), 1(兄)-6(迁), 2(夫)-7(友), 3(子)-8(官), 4(财)-9(田), 5(疾)-10(福)? 
+            # 钦天河图数：16共宗, 27同道, 38为朋, 49为友, 50同途
+            # 对应宫位序列(0-11): 0-5, 1-6, 2-7, 3-8, 4-9. (5-10是疾厄-福德)
             
-            if laiyin_index in hetu_pairs:
-                target_idx, line_name = hetu_pairs[laiyin_index]
-                target_name = p_names[target_idx]
-                hetu_diag.append(f"🔗 来因宫在【{laiyin_palace}】，引动【{line_name}】能量：")
-                hetu_diag.append(f"   需重点关注【{laiyin_palace}】与【{target_name}】的体用关系。")
-                if line_name == "子官线 (4-9)":
-                    hetu_diag.append(f"   💡 提示：合伙/桃花/下属（子女）直接决定事业格局（官禄）。")
-                elif line_name == "财田线 (5-10)":
-                    hetu_diag.append(f"   💡 提示：现金流（财帛）与资产库（田宅）的转化是人生关键。")
+            target_idx = (laiyin_index + 5) % 12 # 默认河图逻辑
+            # 修正命名
+            pair_name = f"{p_names[laiyin_index]}-{p_names[target_idx]}联动"
+            
+            target_name = p_names[target_idx]
+            hetu_diag.append(f"🔗 来因宫在【{laiyin_palace}】，引动【{pair_name}】能量：")
+            hetu_diag.append(f"   需重点关注【{laiyin_palace}】与【{target_name}】的体用关系。")
+            if "子女" in pair_name and "官禄" in pair_name:
+                hetu_diag.append(f"   💡 提示：合伙/桃花/下属直接决定事业格局。")
+            elif "财帛" in pair_name and "田宅" in pair_name:
+                hetu_diag.append(f"   💡 提示：现金流与资产库的转化是人生关键。")
+            elif "命宫" in pair_name and "疾厄" in pair_name:
+                hetu_diag.append(f"   💡 提示：身心合一，身体健康直接影响命运走势。")
         
-        # 整合诊断报告
         final_diagnosis = []
+        final_diagnosis.append("【河图数位联动】")
         if hetu_diag:
-            final_diagnosis.append("【河图数位联动】")
             final_diagnosis.extend(hetu_diag)
-            final_diagnosis.append("")
-        
+        else:
+            final_diagnosis.append("（常规河图能量流转）")
+            
+        final_diagnosis.append("")
+        final_diagnosis.append("【全盘自化风险扫描】")
         if diagnosis_lines:
-            final_diagnosis.append("【全盘自化风险扫描】")
             final_diagnosis.extend(diagnosis_lines)
+        else:
+            final_diagnosis.append("（全盘暂无明显自化禄/忌风险，结构相对稳定）")
         
         return {
             "局数": bureau_name,
             "性别描述": full_gender,
             "核心": {
-                "命宫": self.ZHI[ming_idx], 
-                "来因": y_gan,
-                "来因宫位": laiyin_palace,
-                "定格": laiyin_type,
-                "格论": laiyin_desc
+                "命宫": self.ZHI[ming_idx], "来因": y_gan,
+                "来因宫位": laiyin_palace, "定格": laiyin_type, "格论": laiyin_desc
             },
             "数据": res_data,
             "文本报告": report_lines,
@@ -283,10 +266,8 @@ def calc(req: PaipanRequest):
         s = Solar.fromYmdHms(req.year, req.month, req.day, req.hour, req.minute, 0)
         l = s.getLunar()
         
-        # 1. 农历定月 + 闰月分界
         raw_month = l.getMonth() 
         day = l.getDay()
-        
         if raw_month < 0: 
             m_idx = abs(raw_month)
             if day > 15: m_idx += 1
@@ -294,23 +275,18 @@ def calc(req: PaipanRequest):
             m_idx = raw_month
         if m_idx > 12: m_idx = 1
         
-        # 2. 农历年干
         y_gz = l.getYearInGanZhi()
         y_gan = y_gz[0]
         y_zhi = y_gz[1]
         
         h_idx = engine.ZHI.index(l.getTimeZhi())
-        
         zodiac = engine.ZODIAC.get(y_zhi)
         current_year = datetime.datetime.now().year
         age = current_year - req.year + 1
         
         data = engine.calculate(y_gan, y_zhi, m_idx, day, h_idx, req.gender)
         
-        # 组装文本
         header = f"{data['局数']}，{data['性别描述']}，干支：{y_gz}年，年龄：{age}岁，属相：{zodiac}，阴历（农历）：{l.getYear()}.{abs(raw_month)}.{day}，阳历（公历）：{req.year}.{req.month}.{req.day}，时辰：{l.getTimeZhi()}时"
-        
-        # 核心定格
         core_info = f"🟦 格局判定：{data['核心']['来因宫位']}来因 -> 【{data['核心']['定格']}】\n   {data['核心']['格论']}"
         
         full_text_output = header + "\n\n" + core_info + "\n\n" + "\n\n".join(data["文本报告"])
@@ -319,9 +295,8 @@ def calc(req: PaipanRequest):
         sihua_desc = f"🔴 {y_gan}干生年四化：{sihua_info.get('禄')}禄，{sihua_info.get('权')}权，{sihua_info.get('科')}科，{sihua_info.get('忌')}忌"
         full_text_output += f"\n\n{sihua_desc}"
         
-        # 加上专家诊断
-        if data["专家诊断"]:
-             full_text_output += "\n\n──────────────\n🔎 钦天专家诊断：\n" + "\n".join(data["专家诊断"])
+        # 强制添加诊断
+        full_text_output += "\n\n──────────────\n🔎 钦天专家诊断：\n" + "\n".join(data["专家诊断"])
 
         response = {
             "meta": {
