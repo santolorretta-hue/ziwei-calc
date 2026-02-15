@@ -27,9 +27,7 @@ class ZiWeiEngine:
         self.ZHI = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
         self.GAN = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
         self.ZODIAC = {"子":"鼠", "丑":"牛", "寅":"虎", "卯":"兔", "辰":"龙", "巳":"蛇", "午":"马", "未":"羊", "申":"猴", "酉":"鸡", "戌":"狗", "亥":"猪"}
-        
         self.BUREAU_MAP = {2:"水二局", 3:"木三局", 4:"金四局", 5:"土五局", 6:"火六局"}
-        
         self.NAYIN = {
             "甲子":4,"乙丑":4,"丙寅":6,"丁卯":6,"戊辰":5,"己巳":5,"庚午":5,"辛未":5,"壬申":4,"癸酉":4,
             "甲戌":6,"乙亥":6,"丙子":2,"丁丑":2,"戊寅":5,"己卯":5,"庚辰":4,"辛巳":4,"壬午":5,"癸未":3,
@@ -38,7 +36,6 @@ class ZiWeiEngine:
             "甲辰":6,"乙巳":6,"丙午":2,"丁未":2,"戊申":5,"己酉":5,"庚戌":4,"辛亥":4,"壬子":5,"癸丑":5,
             "甲寅":2,"乙卯":2,"丙辰":5,"丁巳":5,"戊午":6,"己未":6,"庚申":5,"辛酉":5,"壬戌":2,"癸亥":2
         }
-        
         self.SIHUA = {
             "甲": {"禄":"廉贞", "权":"破军", "科":"武曲", "忌":"太阳"},
             "乙": {"禄":"天机", "权":"天梁", "科":"紫微", "忌":"太阴"},
@@ -101,155 +98,65 @@ class ZiWeiEngine:
     def calculate(self, y_gan, y_zhi, m_idx, day, h_idx, gender):
         ming_idx = (2 + (m_idx - 1) - h_idx) % 12
         shen_idx = (2 + (m_idx - 1) + h_idx) % 12
-        
         start_gan_idx = ((self.GAN.index(y_gan) % 5) * 2 + 2) % 10
         stems = {self.ZHI[(2+i)%12]: self.GAN[(start_gan_idx+i)%10] for i in range(12)}
-        
         ming_gz = stems[self.ZHI[ming_idx]] + self.ZHI[ming_idx]
         bureau_num = self.NAYIN.get(ming_gz, 3)
         bureau_name = self.BUREAU_MAP.get(bureau_num, f"{bureau_num}局")
-        
         zw_idx = self.get_ziwei_idx(bureau_num, day)
         tf_idx = (4 - zw_idx) % 12
-        
         stars = {z: [] for z in self.ZHI}
         for n, o in [("紫微",0),("天机",1),("太阳",3),("武曲",4),("天同",5),("廉贞",8)]:
             stars[self.ZHI[(zw_idx-o)%12]].append(n)
         for n, o in [("天府",0),("太阴",1),("贪狼",2),("巨门",3),("天相",4),("天梁",5),("七杀",6),("破军",10)]:
             stars[self.ZHI[(tf_idx+o)%12]].append(n)
-            
         aux_stars = self.get_aux_stars(m_idx, h_idx, y_zhi, y_gan)
         for z, slist in aux_stars.items(): stars[z].extend(slist)
-        
         p_names = ["命宫","兄弟","夫妻","子女","财帛","疾厄","迁移","交友","官禄","田宅","福德","父母"]
-        
         is_yang_year = y_gan in "甲丙戊庚壬"
         direction = 1 if (is_yang_year and gender == "男") or (not is_yang_year and gender == "女") else -1
         yin_yang_gender = "阳" if is_yang_year else "阴"
         full_gender = f"{yin_yang_gender}{gender}"
-        
         sihua_rules = self.SIHUA.get(y_gan, {})
-        
-        laiyin_palace = ""
-        laiyin_type = ""
-        laiyin_desc = ""
-        laiyin_index = -1 
+        laiyin_palace, laiyin_type, laiyin_desc, laiyin_index = "", "", "", -1
         self_reliant_list = ["命宫", "疾厄", "财帛", "官禄", "田宅", "福德"]
-        
-        res_data = {}
-        report_lines = []
-        diagnosis_lines = [] 
-        
+        res_data, report_lines, diagnosis_lines = {}, [], []
         for i, name in enumerate(p_names):
             curr_idx = (ming_idx - i) % 12
             zhi = self.ZHI[curr_idx]
             gan = stems[zhi]
             star_list = stars[zhi]
-            
-            # 1. 自化检查
             zihua_res = self.check_zihua(gan, star_list)
-            zihua_str = ""
-            if zihua_res:
-                zihua_str = "【" + "、".join(zihua_res) + "】"
-                if "自化忌" in zihua_res:
-                    diagnosis_lines.append(f"⚠️ {name}（{gan}干）出现{zihua_str}：注意破耗、流失、不按常理出牌的变数。")
-                elif "自化禄" in zihua_res:
-                    diagnosis_lines.append(f"ℹ️ {name}（{gan}干）出现{zihua_str}：缘分来去匆匆，易得易失。")
-            
-            # 2. 星曜排布
+            zihua_str = "【" + "、".join(zihua_res) + "】" if zihua_res else ""
+            if "自化忌" in zihua_res: diagnosis_lines.append(f"⚠️ {name}（{gan}干）出现{zihua_str}：注意破耗。")
             fmt_stars = []
             for s in star_list:
                 tag = ""
                 for type_key, star_name in sihua_rules.items():
-                    if star_name == s:
-                        tag = f"（化{type_key}）"
-                        break
+                    if star_name == s: tag = f"（化{type_key}）"; break
                 fmt_stars.append(f"{s}{tag}")
-            
-            if direction == -1: limit_rank = i 
-            else: limit_rank = (12 - i) % 12
+            limit_rank = i if direction == -1 else (12 - i) % 12
             age_start = bureau_num + limit_rank * 10
             limit_str = f"{age_start}-{age_start+9}岁"
-            
-            tag_list = []
-            special_title = ""
-            
-            # 3. 来因判定
-            if gan == y_gan: 
-                tag_list.append("（来因宫）")
-                special_title += "（同时也是来因宫）"
-                laiyin_palace = name
-                laiyin_index = i
-                if name in self_reliant_list:
-                    laiyin_type = "自立格"
-                    laiyin_desc = "祸福自担，成功靠自己，因果不假外求。"
-                else:
-                    laiyin_type = "他立格"
-                    laiyin_desc = "这一生的成败、缘分、债务，都与“他人”或“外部环境”深度捆绑。"
-
-            if curr_idx == shen_idx: 
-                tag_list.append("（身宫）")
-                special_title += "（同时也是身宫）"
-            
-            res_data[name] = {
-                "天干": gan, "地支": zhi, "干支": f"{gan}{zhi}", 
-                "星曜": fmt_stars if fmt_stars else ["【空宫】"],
-                "大限": limit_str, "标注": " ".join(tag_list), "自化": zihua_res
-            }
-            
-            stars_str = "，".join(fmt_stars) if fmt_stars else "空宫"
-            line = f"{name}{special_title}（大限{limit_str}）天干：{gan}，地支：{zhi}，星耀：{stars_str} {zihua_str}"
-            report_lines.append(line)
+            tag_list, special_title = [], ""
+            if gan == y_gan:
+                tag_list.append("（来因宫）"); special_title += "（同时也是来因宫）"
+                laiyin_palace, laiyin_index = name, i
+                if name in self_reliant_list: laiyin_type, laiyin_desc = "自立格", "祸福自担，成功靠自己。"
+                else: laiyin_type, laiyin_desc = "他立格", "成败与外部环境捆绑。"
+            if curr_idx == shen_idx: tag_list.append("（身宫）"); special_title += "（同时也是身宫）"
+            res_data[name] = {"天干": gan, "地支": zhi, "星曜": fmt_stars if fmt_stars else ["【空宫】"], "自化": zihua_res}
+            report_lines.append(f"{name}{special_title}（大限{limit_str}）星耀：{'，'.join(fmt_stars) if fmt_stars else '空宫'} {zihua_str}")
         
-        # --- 4. 修复：全覆盖的河图诊断 ---
-        hetu_diag = []
+        final_diagnosis = ["【河图数位联动】"]
         if laiyin_index != -1:
-            hetu_pairs = {
-                0: (5, "命疾线 (1-6)"), 5: (0, "命疾线 (1-6)"),
-                1: (6, "兄友线 (2-7)"), 6: (1, "兄友线 (2-7)"),
-                2: (7, "夫官线 (3-8)"), 7: (2, "夫官线 (3-8)"),
-                3: (8, "子田线 (4-9)"), 8: (3, "子田线 (4-9)"),
-                4: (9, "财福线 (5-10)"), 9: (4, "财福线 (5-10)"),
-                10: (5, "福财线 (11-6 借对宫)"), 11: (6, "父迁线 (6-12)")
-            }
-            
-            target_idx = (laiyin_index + 5) % 12 
-            pair_name = f"{p_names[laiyin_index]}-{p_names[target_idx]}联动"
-            
-            target_name = p_names[target_idx]
-            hetu_diag.append(f"🔗 来因宫在【{laiyin_palace}】，引动【{pair_name}】能量：")
-            hetu_diag.append(f"   需重点关注【{laiyin_palace}】与【{target_name}】的体用关系。")
-            if "子女" in pair_name and "官禄" in pair_name:
-                hetu_diag.append(f"   💡 提示：合伙/桃花/下属直接决定事业格局。")
-            elif "财帛" in pair_name and "田宅" in pair_name:
-                hetu_diag.append(f"   💡 提示：现金流与资产库的转化是人生关键。")
-            elif "命宫" in pair_name and "疾厄" in pair_name:
-                hetu_diag.append(f"   💡 提示：身心合一，身体健康直接影响命运走势。")
-        
-        final_diagnosis = []
-        final_diagnosis.append("【河图数位联动】")
-        if hetu_diag:
-            final_diagnosis.extend(hetu_diag)
-        else:
-            final_diagnosis.append("（常规河图能量流转）")
-            
-        final_diagnosis.append("")
-        final_diagnosis.append("【全盘自化风险扫描】")
-        if diagnosis_lines:
-            final_diagnosis.extend(diagnosis_lines)
-        else:
-            final_diagnosis.append("（全盘暂无明显自化禄/忌风险，结构相对稳定）")
+            target_idx = (laiyin_index + 5) % 12
+            final_diagnosis.append(f"🔗 来因宫在【{laiyin_palace}】，引动【{p_names[laiyin_index]}-{p_names[target_idx]}】能量。")
         
         return {
-            "局数": bureau_name,
-            "性别描述": full_gender,
-            "核心": {
-                "命宫": self.ZHI[ming_idx], "来因": y_gan,
-                "来因宫位": laiyin_palace, "定格": laiyin_type, "格论": laiyin_desc
-            },
-            "数据": res_data,
-            "文本报告": report_lines,
-            "专家诊断": final_diagnosis
+            "局数": bureau_name, "性别描述": full_gender,
+            "核心": {"命宫": self.ZHI[ming_idx], "来因": y_gan, "来因宫位": laiyin_palace, "定格": laiyin_type, "格论": laiyin_desc},
+            "数据": res_data, "文本报告": report_lines, "专家诊断": final_diagnosis
         }
 
 engine = ZiWeiEngine()
@@ -259,57 +166,18 @@ def calc(req: PaipanRequest):
     try:
         s = Solar.fromYmdHms(req.year, req.month, req.day, req.hour, req.minute, 0)
         l = s.getLunar()
-        
-        raw_month = l.getMonth() 
-        day = l.getDay()
-        if raw_month < 0: 
-            m_idx = abs(raw_month)
-            if day > 15: m_idx += 1
-        else:
-            m_idx = raw_month
+        raw_month, day = l.getMonth(), l.getDay()
+        m_idx = abs(raw_month) + (1 if raw_month < 0 and day > 15 else 0)
         if m_idx > 12: m_idx = 1
-        
         y_gz = l.getYearInGanZhi()
-        y_gan = y_gz[0]
-        y_zhi = y_gz[1]
-        
-        h_idx = engine.ZHI.index(l.getTimeZhi())
-        zodiac = engine.ZODIAC.get(y_zhi)
-        current_year = datetime.datetime.now().year
-        age = current_year - req.year + 1
-        
-        data = engine.calculate(y_gan, y_zhi, m_idx, day, h_idx, req.gender)
-        
-        header = f"{data['局数']}，{data['性别描述']}，干支：{y_gz}年，年龄：{age}岁，属相：{zodiac}，阴历（农历）：{l.getYear()}.{abs(raw_month)}.{day}，阳历（公历）：{req.year}.{req.month}.{req.day}，时辰：{l.getTimeZhi()}时"
-        core_info = f"🟦 格局判定：{data['核心']['来因宫位']}来因 -> 【{data['核心']['定格']}】\n   {data['核心']['格论']}"
-        
-        full_text_output = header + "\n\n" + core_info + "\n\n" + "\n\n".join(data["文本报告"])
-        
-        sihua_info = engine.SIHUA.get(y_gan, {})
-        sihua_desc = f"🔴 {y_gan}干生年四化：{sihua_info.get('禄')}禄，{sihua_info.get('权')}权，{sihua_info.get('科')}科，{sihua_info.get('忌')}忌"
-        full_text_output += f"\n\n{sihua_desc}"
-        
-        full_text_output += "\n\n──────────────\n🔎 钦天专家诊断：\n" + "\n".join(data["专家诊断"])
-
-        response = {
-            "meta": {
-                "公历": s.toYmdHms(),
-                "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日",
-                "四化重点": sihua_desc
-            },
-            "formatted_output": full_text_output,
-            # 这里已修改：返回完整的 data，包含核心格局、数据、诊断等
-            "result": data  
-        }
-        return response
-
-    except Exception as e:
+        data = engine.calculate(y_gz[0], y_gz[1], m_idx, day, engine.ZHI.index(l.getTimeZhi()), req.gender)
         return {
-            "error": True, 
-            "message": str(e),
-            "formatted_output": f"排盘计算异常：{str(e)}",
-            "result": {}
+            "meta": {"公历": s.toYmdHms(), "农历": f"{l.getYear()}年{l.getMonth()}月{l.getDay()}日"},
+            "formatted_output": "\n".join(data["文本报告"]),
+            "result": data  # 确保返回完整的 data 对象
         }
+    except Exception as e:
+        return {"error": True, "message": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
